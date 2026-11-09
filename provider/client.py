@@ -24,6 +24,49 @@ _END = object()
 _UNSUPPORTED_ADDITIONAL_FIELDS = "additionalModelRequestFields is not supported for this model"
 
 
+def _rejects_disabled_thinking(exc: KiroHTTPError) -> bool:
+    if exc.status != 400:
+        return False
+    text = exc.body.decode("utf-8", "replace") if isinstance(exc.body, (bytes, bytearray)) else str(exc.body)
+    return "additionalModelRequestFields" in text and "enumeration" in text and '"adaptive"' in text.replace('\\"', '"')
+
+
+_NATIVE_REASONING_KEYS = {"thinking", "output_config", "reasoning"}
+_CLAUDE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+_GPT_EFFORTS = ("none", "low", "medium", "high", "xhigh", "max")
+_EFFORT_ALIASES = {"minimal": "low", "ultra": "max"}
+
+
+def _kiro_reasoning_fields(model: str, config: Any) -> dict | None:
+    """Map Hermes' generic ``{"enabled", "effort"}`` reasoning config onto Kiro's per-family schema.
+
+    Kiro validates ``additionalModelRequestFields`` strictly: Claude accepts
+    ``thinking.type`` (adaptive|disabled) and ``output_config.effort``; GPT accepts
+    ``reasoning.effort``. Anything else is a 400, which broke title generation
+    (Hermes sends ``{"enabled": False}``). Native-shaped dicts pass through.
+    """
+    if not isinstance(config, dict) or not config:
+        return None
+    if set(config) <= _NATIVE_REASONING_KEYS:
+        return dict(config)
+    family = (model or "").lower()
+    effort = str(config.get("effort") or "").strip().lower()
+    effort = _EFFORT_ALIASES.get(effort, effort)
+    disabled = config.get("enabled") is False or effort == "none"
+    if family.startswith("claude"):
+        if disabled:
+            return {"thinking": {"type": "disabled"}}
+        fields: dict = {"thinking": {"type": "adaptive"}}
+        if effort in _CLAUDE_EFFORTS:
+            fields["output_config"] = {"effort": effort}
+        return fields
+    if family.startswith("gpt"):
+        if disabled:
+            return {"reasoning": {"effort": "none"}}
+        return {"reasoning": {"effort": effort}} if effort in _GPT_EFFORTS else None
+    return None
+
+
 def _model_id(body: dict) -> str:
     try:
         model = body["conversationState"]["currentMessage"]["userInputMessage"]["modelId"]
@@ -375,12 +418,25 @@ class KiroClient:
         stale_access_token = ""
         retried_auth = False
         retried_without_additional_fields = False
+        retried_adaptive_thinking = False
         while True:
             try:
                 opened = self._open(body, force_refresh=retried_auth, stale_access_token=stale_access_token)
                 response, stale_access_token = opened if isinstance(opened, tuple) else (opened, "")
                 break
             except KiroHTTPError as exc:
+                fields = body.get("additionalModelRequestFields")
+                if (
+                    not retried_adaptive_thinking
+                    and isinstance(fields, dict)
+                    and (fields.get("thinking") or {}).get("type") == "disabled"
+                    and _rejects_disabled_thinking(exc)
+                ):
+                    # Some Claude models (e.g. opus-5.5) only allow adaptive thinking; keep it cheap instead.
+                    body = dict(body)
+                    body["additionalModelRequestFields"] = {"thinking": {"type": "adaptive"}, "output_config": {"effort": "low"}}
+                    retried_adaptive_thinking = True
+                    continue
                 if (
                     not retried_without_additional_fields
                     and "additionalModelRequestFields" in body
@@ -424,7 +480,7 @@ class KiroClient:
                 release()
 
     def _create(self, *, model: str, messages: list[dict], stream: bool = False, tools: Any = None, extra_body: dict | None = None, **_: Any):
-        effort = (extra_body or {}).get("reasoning")
+        effort = _kiro_reasoning_fields(model, (extra_body or {}).get("reasoning"))
         if effort and not additional_model_request_fields_supported(model):
             effort = None
         body = build_request(messages, tools, model, effort)

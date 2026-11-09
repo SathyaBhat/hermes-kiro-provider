@@ -7,6 +7,7 @@ All notable changes to this project are documented here.
 ### Fixed
 
 - Non-stream calls made from a synchronous caller on a thread with a running event loop (Hermes auxiliary title generation) now return a real response instead of an unawaited coroutine. Awaiting the result still runs the request in a worker thread.
+- Hermes' generic reasoning config (`{"enabled": false}`, `{"effort": ...}`) is now mapped onto Kiro's per-family `additionalModelRequestFields` schema (Claude: `thinking.type` + `output_config.effort`; GPT: `reasoning.effort`) instead of being forwarded verbatim, which Kiro rejected with a 400 and broke title generation. Models that only allow adaptive thinking (e.g. `claude-opus-5.5`) are retried with adaptive thinking at low effort when asked to disable it.
 
 ## [1.0.1] - 2026-09-25
 
