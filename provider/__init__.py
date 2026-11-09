@@ -18,10 +18,27 @@ from credentials import auth_handler, refresh_credential  # noqa: E402
 _FALLBACK_MODELS = ("claude-sonnet-4.5", "claude-haiku-4.5", "gpt-5.6-terra")
 _CATALOG_MODELS = _FALLBACK_MODELS
 _CATALOG_AT = 0.0
-_MODEL_CAPABILITIES = {
-    model: {"supports_vision": False, "supports_tools": True}
-    for model in _FALLBACK_MODELS
-}
+# Kiro rejects image blocks for these open-weight families ("doesn't support the image content block").
+_TEXT_ONLY_PREFIXES = ("deepseek", "minimax", "glm", "qwen")
+
+
+def _supports_vision(model: str) -> bool:
+    """Claude and GPT models on Kiro accept inline images; ``auto`` routes to one of them."""
+    return not str(model or "").strip().lower().startswith(_TEXT_ONLY_PREFIXES)
+
+
+class _ModelCapabilities(dict):
+    """Per-model capabilities, answered for any catalog id (the live catalog changes under us)."""
+
+    def get(self, model, default=None):
+        if model in self:
+            return self[model]
+        return {"supports_vision": _supports_vision(model), "supports_tools": True} if model else default
+
+
+_MODEL_CAPABILITIES = _ModelCapabilities(
+    {model: {"supports_vision": _supports_vision(model), "supports_tools": True} for model in _FALLBACK_MODELS}
+)
 
 
 def _catalog_models() -> tuple[str, ...]:
@@ -70,7 +87,8 @@ profile = KiroProfile(
     base_url="https://runtime.us-east-1.kiro.dev",
     hostname="runtime.us-east-1.kiro.dev",
     supports_health_check=False,
-    supports_vision=False,
+    # Image parts in tool results are forwarded as Kiro image blocks (see translate._images).
+    supports_vision=True,
     fallback_models=_FALLBACK_MODELS,
     model_capabilities=_MODEL_CAPABILITIES,
     default_aux_model="claude-haiku-4.5",

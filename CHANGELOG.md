@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Added
+
+- Forward base64 `image_url` / `input_image` parts as Kiro image blocks on current, history and tool-result turns. Remote URLs and unsupported formats are dropped.
+- Declare vision support for Claude and GPT models in the live catalog. DeepSeek, MiniMax, GLM and Qwen stay text-only because Kiro rejects image blocks for them.
+
 ## [1.0.1] - 2026-09-25
 
 ### Fixed

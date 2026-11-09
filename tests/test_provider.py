@@ -156,9 +156,11 @@ def test_native_profile_declares_auth_catalog_and_capabilities(monkeypatch):
     assert provider.profile.auth_handler is credentials.auth_handler
     assert provider.profile.refresh_credential is credentials.refresh_credential
     assert provider.profile.model_capabilities["claude-haiku-4.5"] == {
-        "supports_vision": False,
+        "supports_vision": True,
         "supports_tools": True,
     }
+    assert provider.profile.model_capabilities.get("claude-opus-5.5")["supports_vision"] is True
+    assert provider.profile.model_capabilities.get("deepseek-v3.2")["supports_vision"] is False
     monkeypatch.setattr(provider, "list_model_ids", lambda: ["live-model"])
     monkeypatch.setattr(provider, "_CATALOG_AT", 0.0)
     monkeypatch.setattr(provider, "_CATALOG_MODELS", provider._FALLBACK_MODELS)
@@ -464,6 +466,39 @@ def test_async_nonstream_does_not_block_event_loop(monkeypatch):
         return await task
 
     assert asyncio.run(run()).choices[0].message.content == "OK"
+
+
+_PNG_B64 = "iVBORw0KGgo="
+
+
+def _image_part(url):
+    return {"type": "image_url", "image_url": {"url": url}}
+
+
+def test_image_parts_are_forwarded_on_current_history_and_tool_result_turns():
+    request = build_request([
+        {"role": "user", "content": [{"type": "text", "text": "first"}, _image_part(f"data:image/png;base64,{_PNG_B64}")]},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "look", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": [{"type": "text", "text": "seen"}, _image_part(f"data:image/jpeg;base64,{_PNG_B64}")]},
+    ], [{"type": "function", "function": {"name": "look", "parameters": {"type": "object"}}}], "claude-sonnet-4.5", None)
+    state = request["conversationState"]
+    history_images = state["history"][0]["userInputMessage"]["images"]
+    current = state["currentMessage"]["userInputMessage"]
+    assert history_images == [{"format": "png", "source": {"bytes": _PNG_B64}}]
+    assert current["images"] == [{"format": "jpeg", "source": {"bytes": _PNG_B64}}]
+    assert current["userInputMessageContext"]["toolResults"]
+
+
+def test_unusable_image_parts_are_dropped():
+    request = build_request([
+        {"role": "user", "content": [
+            {"type": "text", "text": "hi"},
+            _image_part("https://example.com/a.png"),
+            _image_part("data:image/svg+xml;base64,AAAA"),
+            _image_part("data:image/png;base64,not base64!"),
+        ]},
+    ], None, "claude-sonnet-4.5", None)
+    assert "images" not in request["conversationState"]["currentMessage"]["userInputMessage"]
 
 
 def test_tool_history_keeps_specs_and_does_not_mix_system_with_result():
