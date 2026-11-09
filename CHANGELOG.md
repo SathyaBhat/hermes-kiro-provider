@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- Non-stream calls made from a synchronous caller on a thread with a running event loop (Hermes auxiliary title generation) now return a real response instead of an unawaited coroutine. Awaiting the result still runs the request in a worker thread.
+
 ## [1.0.1] - 2026-09-25
 
 ### Fixed

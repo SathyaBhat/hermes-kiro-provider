@@ -466,6 +466,18 @@ def test_async_nonstream_does_not_block_event_loop(monkeypatch):
     assert asyncio.run(run()).choices[0].message.content == "OK"
 
 
+def test_sync_caller_inside_running_loop_gets_a_real_response(monkeypatch):
+    """Hermes auxiliary tasks (e.g. title generation) call the sync client from a thread with a running loop."""
+    instance = client.KiroClient()
+    monkeypatch.setattr(instance, "_events", lambda _: iter([("assistantResponseEvent", {"content": "OK"})]))
+
+    async def run():
+        response = instance.chat.completions.create(model="claude-sonnet-4.5", messages=[{"role": "user", "content": "hi"}])
+        return response.choices[0].message.content
+
+    assert asyncio.run(run()) == "OK"
+
+
 def test_tool_history_keeps_specs_and_does_not_mix_system_with_result():
     request = build_request([
         {"role": "system", "content": "SYSTEM"},

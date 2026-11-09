@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections.abc
 import json
 import time
 from datetime import datetime, timezone
@@ -278,6 +279,52 @@ class _HybridStream:
         return iterate()
 
 
+class _LazyResponse(collections.abc.Coroutine):
+    """Result of a non-stream call made while an event loop is running on this thread.
+
+    Awaiting it (or wrapping it in a task) runs the request in a worker thread, as before.
+    Reading an attribute instead runs the request inline, for synchronous callers that happen
+    to sit on a thread with a running loop (e.g. Hermes auxiliary title generation).
+    """
+    def __init__(self, fn, *args) -> None:
+        self._fn, self._args = fn, args
+        self._result = None
+        self._coro = None
+
+    def _resolve(self):
+        if self._result is None:
+            self._result = self._fn(*self._args)
+        return self._result
+
+    def _driver(self):
+        if self._coro is None:
+            self._coro = self._await_in_thread()
+        return self._coro
+
+    async def _await_in_thread(self):
+        if self._result is None:
+            self._result = await asyncio.to_thread(self._fn, *self._args)
+        return self._result
+
+    def __await__(self):
+        return self._driver().__await__()
+
+    def send(self, value):
+        return self._driver().send(value)
+
+    def throw(self, *args):
+        return self._driver().throw(*args)
+
+    def close(self):
+        if self._coro is not None:
+            self._coro.close()
+
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return getattr(self._resolve(), name)
+
+
 class KiroClient:
     HERMES_SKIP_TRANSPORT_WRAP = True
     HERMES_SKIP_ASYNC_WRAP = True
@@ -387,7 +434,7 @@ class KiroClient:
             asyncio.get_running_loop()
         except RuntimeError:
             return self._complete(model, body)
-        return asyncio.to_thread(self._complete, model, body)
+        return _LazyResponse(self._complete, model, body)
 
     @staticmethod
     def _add_tool_event(calls: dict[str, dict[str, str]], data: dict) -> None:
